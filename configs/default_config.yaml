@@ -1,0 +1,81 @@
+simulation:
+  seed: 42
+  total_prb: 100
+  delta_t: 1.0
+  episode_length: 200
+
+users:
+  max_ambulance: 3
+  ordinary_vehicles_min: 20
+  ordinary_vehicles_max: 70
+  embb_users_min: 5
+  embb_users_max: 25
+  max_ordinary_users_norm: 100
+
+traffic:
+  p_on: 0.03
+  p_off: 0.08
+
+  ambulance_packet_size_mbit: 0.01
+  lambda_ambulance_normal: 5
+  lambda_ambulance_emergency: 50
+
+  vehicle_packet_size_mbit: 0.02
+  lambda_vehicle: 2
+
+  embb_packet_size_mbit: 0.1
+  lambda_embb_normal: 5
+  lambda_embb_surge: 8
+  embb_surge_probability: 0.05
+  embb_surge_min_duration: 20
+  embb_surge_max_duration: 50
+
+channel:
+  r_prb_mbps: 0.1
+  eta_max: 5.0
+
+  poor_probability: 0.15
+  normal_probability: 0.65
+  good_probability: 0.20
+
+  eta_poor_min: 0.5
+  eta_poor_max: 1.5
+
+  eta_normal_min: 1.5
+  eta_normal_max: 3.0
+
+  eta_good_min: 3.0
+  eta_good_max: 5.0
+
+queue:
+  ambulance_queue_max_mbit: 20.0
+  ordinary_queue_max_mbit: 100.0
+
+qos:
+  ambulance_latency_threshold_s: 0.1
+  ordinary_throughput_target_mbps: 8.0
+  epsilon: 1.0e-6
+
+action:
+  alpha_values: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
+
+reward:
+  w_latency_excess: 3.0
+  w_sla_violation: 10.0
+  w_ordinary_throughput: 1.0
+  w_resource_waste: 0.5
+  w_action_change: 0.2
+  rho_ambulance_low: 0.2
+  alpha_ambulance_high: 0.5
+
+dqn:
+  learning_rate: 0.0005
+  gamma: 0.99
+  batch_size: 64
+  buffer_size: 50000
+  learning_starts: 1000
+  target_update_interval: 1000
+  exploration_initial_eps: 1.0
+  exploration_final_eps: 0.05
+  exploration_fraction: 0.3
+  total_timesteps_initial: 100000
