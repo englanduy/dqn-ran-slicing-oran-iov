@@ -107,7 +107,8 @@ class RANSlicingEnv(gym.Env):
 
         # Initialize the episode population within the configured simulation ranges.
         self.current_step = 0
-        self.n_ambulance = int(self.np_random.integers(0, self.max_ambulance + 1))
+        # Normal state starts with no more than one ambulance UE present.
+        self.n_ambulance = self._sample_normal_ambulance_count()
         self.n_ordinary_vehicles = int(
             self.np_random.integers(
                 self.ordinary_vehicles_min,
@@ -158,20 +159,26 @@ class RANSlicingEnv(gym.Env):
             if self.ambulance_emergency
             else float(traffic_cfg["lambda_ambulance_normal"])
         )
-        ambulance_packets = self.np_random.poisson(lambda_ambulance * self.n_ambulance)
+        ambulance_packets = self.np_random.poisson(
+            lambda_ambulance * self.n_ambulance * self.delta_t
+        )
         a_ambulance = ambulance_packets * float(traffic_cfg["ambulance_packet_size_mbit"])
 
         # c. Generate ordinary vehicle and eMBB arrivals.
         self._update_embb_surge()
         vehicle_packets = self.np_random.poisson(
-            float(traffic_cfg["lambda_vehicle"]) * self.n_ordinary_vehicles
+            float(traffic_cfg["lambda_vehicle"])
+            * self.n_ordinary_vehicles
+            * self.delta_t
         )
         lambda_embb = (
             float(traffic_cfg["lambda_embb_surge"])
             if self.embb_surge_remaining > 0
             else float(traffic_cfg["lambda_embb_normal"])
         )
-        embb_packets = self.np_random.poisson(lambda_embb * self.n_embb_users)
+        embb_packets = self.np_random.poisson(
+            lambda_embb * self.n_embb_users * self.delta_t
+        )
         a_vehicle = vehicle_packets * float(traffic_cfg["vehicle_packet_size_mbit"])
         a_embb = embb_packets * float(traffic_cfg["embb_packet_size_mbit"])
         a_ordinary = a_vehicle + a_embb
@@ -288,6 +295,11 @@ class RANSlicingEnv(gym.Env):
             "reward_resource_waste": reward_resource_waste,
             "reward_action_change": reward_action_change,
             "reward_total": float(reward_total),
+            "n_ambulance": self.n_ambulance,
+            "n_ordinary_vehicles": self.n_ordinary_vehicles,
+            "n_embb_users": self.n_embb_users,
+            "ambulance_emergency": self.ambulance_emergency,
+            "embb_surge_active": self.embb_surge_remaining > 0,
         }
 
         # j. Return the next observation and Gymnasium step tuple.
@@ -319,8 +331,10 @@ class RANSlicingEnv(gym.Env):
         if self.ambulance_emergency:
             if self.np_random.random() < float(traffic_cfg["p_off"]):
                 self.ambulance_emergency = False
+                self.n_ambulance = self._sample_normal_ambulance_count()
         elif self.np_random.random() < float(traffic_cfg["p_on"]):
             self.ambulance_emergency = True
+            self.n_ambulance = int(self.np_random.integers(1, self.max_ambulance + 1))
 
     def _update_embb_surge(self) -> None:
         traffic_cfg = self.config["traffic"]
@@ -335,6 +349,9 @@ class RANSlicingEnv(gym.Env):
                     int(traffic_cfg["embb_surge_max_duration"]) + 1,
                 )
             )
+
+    def _sample_normal_ambulance_count(self) -> int:
+        return int(self.np_random.integers(0, min(1, self.max_ambulance) + 1))
 
     def _sample_spectral_efficiency(self, n_users: int) -> np.ndarray:
         if n_users <= 0:
