@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import csv
 import sys
 from datetime import datetime
@@ -44,21 +45,54 @@ STEP_INFO_KEYS = [
 ]
 
 
-def evaluate_dqn() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def parse_args() -> argparse.Namespace:
+    """Parse optional DQN evaluation overrides."""
+    parser = argparse.ArgumentParser(description="Evaluate a trained DQN model.")
+    parser.add_argument(
+        "--model-path",
+        type=Path,
+        default=None,
+        help="Path to the trained DQN model zip file.",
+    )
+    parser.add_argument(
+        "--run-name",
+        type=str,
+        default=None,
+        help="Optional prefix for output CSV filenames.",
+    )
+    parser.add_argument(
+        "--episodes",
+        type=int,
+        default=None,
+        help="Number of evaluation episodes. Defaults to 30.",
+    )
+    return parser.parse_args()
+
+
+def resolve_project_path(path: Path) -> Path:
+    """Treat relative CLI paths as relative to the project root."""
+    return path if path.is_absolute() else PROJECT_ROOT / path
+
+
+def evaluate_dqn(
+    model_path: Path = MODEL_PATH,
+    n_episodes: int = N_EPISODES,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Load the trained DQN and evaluate it with deterministic actions."""
-    if not MODEL_PATH.exists():
+    model_path = resolve_project_path(model_path)
+    if not model_path.exists():
         raise FileNotFoundError(
-            f"Trained DQN model not found: {MODEL_PATH}. "
+            f"Trained DQN model not found: {model_path}. "
             "Run agents/train_dqn.py before evaluation."
         )
 
     env = RANSlicingEnv(CONFIG_PATH)
-    model = DQN.load(str(MODEL_PATH), env=env)
+    model = DQN.load(str(model_path), env=env)
 
     step_logs = []
     episode_summaries = []
 
-    for episode in range(N_EPISODES):
+    for episode in range(n_episodes):
         seed = BASE_SEED + episode
         obs, _ = env.reset(seed=seed)
 
@@ -204,11 +238,20 @@ def print_compact_summary(summaries: list[dict[str, Any]]) -> None:
 
 
 def main() -> None:
+    args = parse_args()
+    model_path = resolve_project_path(args.model_path) if args.model_path else MODEL_PATH
+    n_episodes = args.episodes if args.episodes is not None else N_EPISODES
+    if n_episodes <= 0:
+        raise ValueError("--episodes must be a positive integer.")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    steps_path = PROJECT_ROOT / "results" / f"dqn_steps_{timestamp}.csv"
-    summary_path = PROJECT_ROOT / "results" / f"dqn_summary_{timestamp}.csv"
+    output_prefix = args.run_name if args.run_name else "dqn"
+    steps_path = PROJECT_ROOT / "results" / f"{output_prefix}_steps_{timestamp}.csv"
+    summary_path = PROJECT_ROOT / "results" / f"{output_prefix}_summary_{timestamp}.csv"
 
-    step_logs, episode_summaries = evaluate_dqn()
+    step_logs, episode_summaries = evaluate_dqn(
+        model_path=model_path,
+        n_episodes=n_episodes,
+    )
     write_csv(steps_path, step_logs)
     write_csv(summary_path, episode_summaries)
     print_compact_summary(episode_summaries)

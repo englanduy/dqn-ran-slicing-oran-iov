@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import argparse
+import glob
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -23,31 +25,46 @@ AGGREGATE_METRICS = [
 ]
 
 
+def parse_args() -> argparse.Namespace:
+    """Parse optional comparison inputs."""
+    parser = argparse.ArgumentParser(
+        description="Compare baseline summaries with a selected DQN summary."
+    )
+    parser.add_argument(
+        "--dqn-summary-pattern",
+        default="results/dqn_summary_*.csv",
+        help=(
+            "Glob pattern for DQN summary files. The latest matching file is used. "
+            'Example: "results/dqn_300k_summary_*.csv".'
+        ),
+    )
+    return parser.parse_args()
+
+
 def latest_csv(pattern: str) -> Path:
-    """Return the newest CSV matching pattern in results/."""
+    """Return the newest CSV matching pattern."""
+    pattern_path = Path(pattern)
+    search_pattern = pattern if pattern_path.is_absolute() else str(PROJECT_ROOT / pattern)
     matches = sorted(
-        RESULTS_DIR.glob(pattern),
+        (Path(path) for path in glob.glob(search_pattern)),
         key=lambda path: path.stat().st_mtime,
         reverse=True,
     )
     if not matches:
-        raise FileNotFoundError(f"No files found for results/{pattern}")
+        raise FileNotFoundError(f"No files found for pattern: {pattern}")
     return matches[0]
 
 
-def load_episode_summaries() -> pd.DataFrame:
+def load_episode_summaries(dqn_summary_pattern: str) -> pd.DataFrame:
     """Load the newest baseline and DQN summaries and combine them."""
-    baseline_path = latest_csv("baseline_summary_*.csv")
-    dqn_path = latest_csv("dqn_summary_*.csv")
+    baseline_path = latest_csv("results/baseline_summary_*.csv")
+    dqn_path = latest_csv(dqn_summary_pattern)
 
     baseline_df = pd.read_csv(baseline_path)
     dqn_df = pd.read_csv(dqn_path)
 
-    # DQN summaries may not carry a policy column because they contain one policy only.
-    if "policy" not in dqn_df.columns:
-        dqn_df["policy"] = "DQN"
-    else:
-        dqn_df["policy"] = dqn_df["policy"].fillna("DQN")
+    # The selected DQN run is labeled explicitly for comparison tables.
+    dqn_df["policy"] = "DQN-300k"
 
     combined_df = pd.concat([baseline_df, dqn_df], ignore_index=True, sort=False)
     combined_df = normalize_metric_columns(combined_df)
@@ -81,11 +98,12 @@ def aggregate_by_policy(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def main() -> None:
+    args = parse_args()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     combined_path = RESULTS_DIR / f"combined_episode_results_{timestamp}.csv"
     aggregate_path = RESULTS_DIR / f"aggregate_comparison_{timestamp}.csv"
 
-    combined_df = load_episode_summaries()
+    combined_df = load_episode_summaries(args.dqn_summary_pattern)
     aggregate_df = aggregate_by_policy(combined_df)
 
     combined_df.to_csv(combined_path, index=False)

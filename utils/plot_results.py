@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -20,8 +21,17 @@ POLICY_DISPLAY_NAMES = {
     "GreedySLAPolicy": "Greedy SLA",
     "RandomPolicy": "Random",
     "DQN": "DQN",
+    "DQN-300k": "DQN-300k",
 }
-POLICY_ORDER = ["Static", "Priority", "Load-based", "Greedy SLA", "DQN", "Random"]
+POLICY_ORDER = [
+    "Static",
+    "Priority",
+    "Load-based",
+    "Greedy SLA",
+    "DQN",
+    "DQN-300k",
+    "Random",
+]
 
 FIGURE_SPECS = [
     {
@@ -101,28 +111,60 @@ def order_policies(df: pd.DataFrame) -> pd.DataFrame:
     """Apply report display names and keep policies in a consistent order."""
     ordered_df = df.copy()
     ordered_df["policy"] = readable_policy_names(ordered_df["policy"])
-    ordered_df["policy"] = pd.Categorical(
-        ordered_df["policy"],
-        categories=POLICY_ORDER,
-        ordered=True,
+    policy_rank = {policy: index for index, policy in enumerate(POLICY_ORDER)}
+    ordered_df["_policy_rank"] = ordered_df["policy"].map(policy_rank)
+    known_df = ordered_df[ordered_df["_policy_rank"].notna()].sort_values("_policy_rank")
+    unknown_df = ordered_df[ordered_df["_policy_rank"].isna()].sort_values("policy")
+    return pd.concat([known_df, unknown_df], ignore_index=True).drop(
+        columns="_policy_rank"
     )
-    return ordered_df.sort_values("policy").reset_index(drop=True)
+
+
+def normalize_metric_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert all plotted aggregate mean/std columns to numeric values."""
+    numeric_df = df.copy()
+    metric_columns = set()
+    for spec in FIGURE_SPECS:
+        metric_columns.add(spec["mean_column"])
+        metric_columns.add(spec["std_column"])
+
+    for column in metric_columns:
+        if column in numeric_df.columns:
+            numeric_df[column] = pd.to_numeric(numeric_df[column], errors="coerce")
+
+    return numeric_df
+
+
+def require_column(df: pd.DataFrame, column: str) -> None:
+    """Raise a clear error when an expected aggregate column is unavailable."""
+    if column not in df.columns:
+        available_columns = ", ".join(str(name) for name in df.columns)
+        raise KeyError(
+            f"Missing required aggregate column: {column}. "
+            f"Available columns: {available_columns}"
+        )
 
 
 def plot_metric(aggregate_df: pd.DataFrame, spec: dict[str, str]) -> None:
     """Create and save one metric bar chart."""
     mean_column = spec["mean_column"]
     std_column = spec["std_column"]
-    if mean_column not in aggregate_df.columns:
-        raise KeyError(f"Missing required aggregate column: {mean_column}")
+    require_column(aggregate_df, mean_column)
 
-    policies = aggregate_df["policy"].astype(str)
+    plot_df = aggregate_df.dropna(subset=[mean_column]).copy()
+    if plot_df.empty:
+        raise ValueError(f"No numeric rows available for column: {mean_column}")
+
+    policies = plot_df["policy"].astype(str)
     scale = 100.0 if spec.get("percent", False) else 1.0
-    means = aggregate_df[mean_column] * scale
-    yerr = aggregate_df[std_column] * scale if std_column in aggregate_df.columns else None
+    means = (plot_df[mean_column] * scale).to_numpy(dtype=float)
+    yerr = None
+    if std_column in plot_df.columns:
+        yerr = (plot_df[std_column] * scale).to_numpy(dtype=float)
+        yerr = np.nan_to_num(yerr, nan=0.0)
 
     fig, ax = plt.subplots(figsize=(11, 6))
-    ax.bar(policies, means, yerr=yerr, capsize=4 if yerr is not None else 0)
+    ax.bar(policies.to_numpy(), means, yerr=yerr, capsize=4 if yerr is not None else 0)
     ax.set_xlabel("Policy")
     ax.set_ylabel(spec["ylabel"])
     ax.set_title(spec["title"])
@@ -142,7 +184,10 @@ def main() -> None:
     aggregate_path = latest_csv("aggregate_comparison_*.csv")
     combined_path = latest_csv("combined_episode_results_*.csv")
 
-    aggregate_df = order_policies(pd.read_csv(aggregate_path))
+    aggregate_df = pd.read_csv(aggregate_path)
+    print("Aggregate CSV columns:")
+    print(list(aggregate_df.columns))
+    aggregate_df = normalize_metric_columns(order_policies(aggregate_df))
     # Loaded for traceability alongside the aggregate input used by the figures.
     combined_df = pd.read_csv(combined_path)
 
