@@ -68,6 +68,7 @@ OPTIONAL_STEP_INFO_KEYS = [
     "ordinary_queue_after_mbit",
     "reconstructed_latency_s",
     "latency_excess_raw",
+    "latency_excess_clipped",
     "sla_violation_indicator",
     "ordinary_throughput_reward",
     "resource_waste_penalty",
