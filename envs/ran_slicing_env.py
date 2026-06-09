@@ -56,7 +56,7 @@ class RANSlicingEnv(gym.Env):
         self.observation_space = spaces.Box(
             low=0,
             high=1,
-            shape=(12,),
+            shape=(13,),
             dtype=np.float32,
         )
         self.action_space = spaces.Discrete(8)
@@ -352,6 +352,7 @@ class RANSlicingEnv(gym.Env):
                 self.last_eta_ambulance_avg / self.eta_max,
                 self.last_eta_ordinary_avg / self.eta_max,
                 self.alpha_ambulance_prev,
+                1.0 if self.ambulance_emergency else 0.0,
             ],
             dtype=np.float32,
         )

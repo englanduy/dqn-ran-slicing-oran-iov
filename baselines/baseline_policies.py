@@ -74,6 +74,20 @@ class PriorityPolicy(BasePolicy):
         return alpha_to_action(self.alpha_values, alpha)
 
 
+class EmergencyPriorityPolicy(BasePolicy):
+    """Emergency-context priority baseline using only the current observation."""
+
+    def select_action(
+        self,
+        observation: np.ndarray,
+        info: dict[str, Any] | None = None,
+    ) -> int:
+        # Observation index 12 is ambulance_emergency_flag; do not use same-step info.
+        ambulance_emergency = float(observation[12]) >= 0.5
+        alpha = 0.7 if ambulance_emergency else 0.1
+        return alpha_to_action(self.alpha_values, alpha)
+
+
 class LoadBasedPolicy(BasePolicy):
     """Load baseline using normalized rho_A and rho_O from the observation."""
 
@@ -82,10 +96,34 @@ class LoadBasedPolicy(BasePolicy):
         observation: np.ndarray,
         info: dict[str, Any] | None = None,
     ) -> int:
+        # Use only current observation values; do not use same-step info or emergency flag.
         # Observation indices follow the spec: rho_A at index 2 and rho_O at index 3.
         rho_ambulance = float(observation[2])
         rho_ordinary = float(observation[3])
         alpha = rho_ambulance / (rho_ambulance + rho_ordinary + self.epsilon)
+        alpha = float(np.clip(alpha, 0.1, 0.8))
+        return alpha_to_action(self.alpha_values, alpha)
+
+
+class GuaranteedLoadBasedPolicy(BasePolicy):
+    """Load-based baseline with a minimum Ambulance Slice PRB guarantee."""
+
+    def select_action(
+        self,
+        observation: np.ndarray,
+        info: dict[str, Any] | None = None,
+    ) -> int:
+        # Use only current observation load features; do not use same-step info
+        # or the ambulance emergency flag.
+        rho_ambulance = float(observation[2])
+        rho_ordinary = float(observation[3])
+        alpha_min = 0.3
+        alpha_max = 0.8
+        load_ratio = rho_ambulance / (
+            rho_ambulance + rho_ordinary + self.epsilon
+        )
+        alpha = alpha_min + (alpha_max - alpha_min) * load_ratio
+        alpha = float(np.clip(alpha, alpha_min, alpha_max))
         return alpha_to_action(self.alpha_values, alpha)
 
 

@@ -5,6 +5,7 @@ def main() -> None:
     env = RANSlicingEnv("configs/default_config.yaml")
 
     observation, _ = env.reset(seed=42)
+    assert observation.shape == (13,)
     print("Observation shape:", observation.shape)
     print("Observation min/max:", observation.min(), observation.max())
     print("Action space:", env.action_space)

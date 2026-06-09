@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import csv
 import sys
 from datetime import datetime
@@ -13,7 +14,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from baselines.baseline_policies import (  # noqa: E402
+    EmergencyPriorityPolicy,
     GreedySLAPolicy,
+    GuaranteedLoadBasedPolicy,
     LoadBasedPolicy,
     PriorityPolicy,
     RandomPolicy,
@@ -26,16 +29,49 @@ CONFIG_PATH = "configs/default_config.yaml"
 N_EPISODES = 30
 BASE_SEED = 42
 
+POLICY_REGISTRY = {
+    "static": ("StaticPolicy", StaticPolicy),
+    "emergency_priority": ("EmergencyPriorityPolicy", EmergencyPriorityPolicy),
+    "priority": ("PriorityPolicy", PriorityPolicy),
+    "load_based": ("LoadBasedPolicy", LoadBasedPolicy),
+    "guaranteed_load_based": (
+        "GuaranteedLoadBasedPolicy",
+        GuaranteedLoadBasedPolicy,
+    ),
+    "greedy_sla": ("GreedySLAPolicy", GreedySLAPolicy),
+    "random": ("RandomPolicy", RandomPolicy),
+}
+DEFAULT_POLICY_KEYS = ["static", "priority", "load_based", "greedy_sla", "random"]
 
-def make_policies() -> dict[str, Any]:
-    """Create one instance of each baseline policy."""
-    return {
-        "StaticPolicy": StaticPolicy(CONFIG_PATH),
-        "PriorityPolicy": PriorityPolicy(CONFIG_PATH),
-        "LoadBasedPolicy": LoadBasedPolicy(CONFIG_PATH),
-        "GreedySLAPolicy": GreedySLAPolicy(CONFIG_PATH),
-        "RandomPolicy": RandomPolicy(CONFIG_PATH, seed=BASE_SEED),
-    }
+
+def parse_args() -> argparse.Namespace:
+    """Parse baseline evaluation controls."""
+    parser = argparse.ArgumentParser(description="Evaluate baseline RAN slicing policies.")
+    parser.add_argument(
+        "--policies",
+        nargs="+",
+        choices=sorted(POLICY_REGISTRY),
+        default=DEFAULT_POLICY_KEYS,
+        help="Policy keys to evaluate.",
+    )
+    parser.add_argument(
+        "--run-name",
+        default=None,
+        help="Optional prefix for output CSV filenames.",
+    )
+    return parser.parse_args()
+
+
+def make_policies(policy_keys: list[str]) -> dict[str, Any]:
+    """Create the selected baseline policy instances."""
+    policies = {}
+    for key in policy_keys:
+        policy_name, policy_cls = POLICY_REGISTRY[key]
+        if key == "random":
+            policies[policy_name] = policy_cls(CONFIG_PATH, seed=BASE_SEED)
+        else:
+            policies[policy_name] = policy_cls(CONFIG_PATH)
+    return policies
 
 
 def evaluate_policy(
@@ -44,7 +80,7 @@ def evaluate_policy(
     env: RANSlicingEnv,
     seed_offset: int,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Run one policy for N_EPISODES and return step logs plus summaries."""
+    """Run one policy for N_EPISODES using causal action selection."""
     step_logs = []
     episode_summaries = []
 
@@ -68,7 +104,7 @@ def evaluate_policy(
         step = 0
 
         while not (terminated or truncated):
-            # Select actions causally from the current observation and previous info.
+            # Policies only receive the current observation and previous step info.
             action = int(policy.select_action(obs, last_info))
             obs, reward, terminated, truncated, info = env.step(action)
             last_info = info
@@ -103,19 +139,20 @@ def evaluate_policy(
 
             step += 1
 
-        summary = build_episode_summary(
-            policy_name=policy_name,
-            episode=episode,
-            seed=seed,
-            total_reward=total_reward,
-            ambulance_latencies_ms=ambulance_latencies_ms,
-            ambulance_sla_violations=ambulance_sla_violations,
-            ordinary_throughputs=ordinary_throughputs,
-            ordinary_deficits=ordinary_deficits,
-            prb_utilizations=prb_utilizations,
-            action_counts=action_counts,
+        episode_summaries.append(
+            build_episode_summary(
+                policy_name=policy_name,
+                episode=episode,
+                seed=seed,
+                total_reward=total_reward,
+                ambulance_latencies_ms=ambulance_latencies_ms,
+                ambulance_sla_violations=ambulance_sla_violations,
+                ordinary_throughputs=ordinary_throughputs,
+                ordinary_deficits=ordinary_deficits,
+                prb_utilizations=prb_utilizations,
+                action_counts=action_counts,
+            )
         )
-        episode_summaries.append(summary)
 
     return step_logs, episode_summaries
 
@@ -132,8 +169,10 @@ def build_episode_summary(
     prb_utilizations: list[float],
     action_counts: np.ndarray,
 ) -> dict[str, Any]:
-    """Aggregate one episode into the metrics required by the spec."""
+    """Aggregate one episode into the required report metrics."""
     sla_violation_rate = float(np.mean(ambulance_sla_violations))
+    qos_satisfaction_rate = 1.0 - sla_violation_rate
+
     summary = {
         "policy": policy_name,
         "episode": episode,
@@ -143,8 +182,10 @@ def build_episode_summary(
         "p95_ambulance_latency_ms": float(
             np.percentile(ambulance_latencies_ms, 95)
         ),
+        "sla_violation_rate": sla_violation_rate,
+        "qos_satisfaction_rate": qos_satisfaction_rate,
         "ambulance_sla_violation_rate": sla_violation_rate,
-        "ambulance_qos_satisfaction_rate": 1.0 - sla_violation_rate,
+        "ambulance_qos_satisfaction_rate": qos_satisfaction_rate,
         "avg_ordinary_throughput_mbps": float(np.mean(ordinary_throughputs)),
         "ordinary_throughput_deficit_rate": float(np.mean(ordinary_deficits)),
         "avg_prb_utilization": float(np.mean(prb_utilizations)),
@@ -189,22 +230,35 @@ def print_compact_summary(summaries: list[dict[str, Any]]) -> None:
             f"{policy_name},"
             f"{np.mean([row['total_reward'] for row in rows]):.6f},"
             f"{np.mean([row['avg_ambulance_latency_ms'] for row in rows]):.6f},"
-            f"{np.mean([row['ambulance_sla_violation_rate'] for row in rows]):.6f},"
+            f"{np.mean([row['sla_violation_rate'] for row in rows]):.6f},"
             f"{np.mean([row['avg_ordinary_throughput_mbps'] for row in rows]):.6f},"
             f"{np.mean([row['avg_prb_utilization'] for row in rows]):.6f}"
         )
 
 
-def main() -> None:
+def output_paths(run_name: str | None) -> tuple[Path, Path]:
+    """Resolve timestamped output paths."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    steps_path = PROJECT_ROOT / "results" / f"baseline_steps_{timestamp}.csv"
-    summary_path = PROJECT_ROOT / "results" / f"baseline_summary_{timestamp}.csv"
+    if run_name:
+        return (
+            PROJECT_ROOT / "results" / f"{run_name}_steps_{timestamp}.csv",
+            PROJECT_ROOT / "results" / f"{run_name}_summary_{timestamp}.csv",
+        )
+    return (
+        PROJECT_ROOT / "results" / f"baseline_steps_{timestamp}.csv",
+        PROJECT_ROOT / "results" / f"baseline_summary_{timestamp}.csv",
+    )
+
+
+def main() -> None:
+    args = parse_args()
+    steps_path, summary_path = output_paths(args.run_name)
 
     env = RANSlicingEnv(CONFIG_PATH)
     all_step_logs = []
     all_episode_summaries = []
 
-    for policy_index, (policy_name, policy) in enumerate(make_policies().items()):
+    for policy_index, (policy_name, policy) in enumerate(make_policies(args.policies).items()):
         step_logs, episode_summaries = evaluate_policy(
             policy_name=policy_name,
             policy=policy,

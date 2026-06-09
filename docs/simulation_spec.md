@@ -134,6 +134,8 @@ Ordinary throughput target:
 
 The state vector is:
 
+The observation/state dimension is 13.
+
 s_t = [
   n_A,
   n_O,
@@ -146,7 +148,8 @@ s_t = [
   u,
   eta_A_avg,
   eta_O_avg,
-  alpha_A_prev
+  alpha_A_prev,
+  e_A
 ]
 
 Definitions:
@@ -162,6 +165,9 @@ Definitions:
 - eta_A_avg = average spectral efficiency of Ambulance Slice / eta_max
 - eta_O_avg = average spectral efficiency of Ordinary Traffic Slice / eta_max
 - alpha_A_prev = previous PRB ratio for Ambulance Slice
+- e_A = ambulance_emergency_flag, equal to 1.0 if the Ambulance Slice is currently in emergency mode, else 0.0
+
+The ambulance emergency flag is assumed observable by the Near-RT RIC/xApp as context information.
 
 All state values fed into the DQN must be clipped to [0, 1].
 
@@ -246,7 +252,7 @@ The simulation must log:
 
 Initial DQN settings:
 - policy: MlpPolicy
-- input dimension: 12
+- input dimension: 13
 - output dimension: 8
 - hidden layers: [128, 128]
 - activation: ReLU

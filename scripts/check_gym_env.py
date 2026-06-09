@@ -5,6 +5,8 @@ from envs.ran_slicing_env import RANSlicingEnv
 
 def main() -> None:
     env = RANSlicingEnv()
+    observation, _ = env.reset(seed=42)
+    assert observation.shape == (13,)
     check_env(env, skip_render_check=True)
     print("RANSlicingEnv passed Gymnasium environment check.")
 
