@@ -44,6 +44,41 @@ STEP_INFO_KEYS = [
     "embb_surge_active",
 ]
 
+OBSERVATION_KEYS = [
+    "obs_n_A",
+    "obs_n_O",
+    "obs_rho_A",
+    "obs_rho_O",
+    "obs_q_A",
+    "obs_q_O",
+    "obs_l_A",
+    "obs_r_O",
+    "obs_u",
+    "obs_eta_A_avg",
+    "obs_eta_O_avg",
+    "obs_alpha_A_prev",
+]
+
+OPTIONAL_STEP_INFO_KEYS = [
+    "ambulance_queue_before_mbit",
+    "ordinary_queue_before_mbit",
+    "latency_numerator_mbit",
+    "latency_denominator_mbps",
+    "ambulance_queue_after_mbit",
+    "ordinary_queue_after_mbit",
+    "reconstructed_latency_s",
+    "latency_excess_raw",
+    "sla_violation_indicator",
+    "ordinary_throughput_reward",
+    "resource_waste_penalty",
+    "action_change_penalty",
+    "reward_latency_excess",
+    "reward_sla_violation",
+    "reward_ordinary_throughput",
+    "reward_resource_waste",
+    "reward_action_change",
+]
+
 
 def parse_args() -> argparse.Namespace:
     """Parse optional DQN evaluation overrides."""
@@ -109,9 +144,13 @@ def evaluate_dqn(
         step = 0
 
         while not (terminated or truncated):
+            # Save the exact observation available before action selection.
+            obs_before_action = np.asarray(obs, dtype=float).copy()
+
             # Use deterministic DQN inference for evaluation.
             action, _ = model.predict(obs, deterministic=True)
             action = int(action)
+            selected_alpha_a = float(env.alpha_values[action])
 
             obs, reward, terminated, truncated, info = env.step(action)
 
@@ -135,9 +174,16 @@ def evaluate_dqn(
                 "episode": episode,
                 "step": step,
                 "action": action,
+                "selected_action": action,
+                "selected_alpha_A": selected_alpha_a,
             }
+            for key, value in zip(OBSERVATION_KEYS, obs_before_action):
+                step_log[key] = value
             for key in STEP_INFO_KEYS:
                 step_log[key] = info[key]
+            for key in OPTIONAL_STEP_INFO_KEYS:
+                if key in info:
+                    step_log[key] = info[key]
             step_logs.append(step_log)
 
             step += 1

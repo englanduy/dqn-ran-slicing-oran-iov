@@ -212,7 +212,10 @@ class RANSlicingEnv(gym.Env):
         offered_ordinary = q_ordinary_current + a_ordinary
 
         # g. Compute Ambulance latency using the specified RAN-side formula.
-        l_ambulance = offered_ambulance / (c_ambulance + self.epsilon)
+        latency_numerator_mbit = offered_ambulance
+        latency_denominator_mbps = c_ambulance + self.epsilon
+        l_ambulance = latency_numerator_mbit / latency_denominator_mbps
+        reconstructed_latency_s = latency_numerator_mbit / latency_denominator_mbps
 
         # h. Compute SLA violation, Ordinary throughput, PRB utilization, and reward.
         ambulance_sla_violation = int(l_ambulance > self.latency_threshold)
@@ -243,12 +246,27 @@ class RANSlicingEnv(gym.Env):
             else 0.0
         )
         reward_action_change = abs(alpha_a - self.alpha_ambulance_prev)
-        reward_total = (
+        latency_excess_contribution = (
             -float(reward_cfg["w_latency_excess"]) * reward_latency_excess
-            - float(reward_cfg["w_sla_violation"]) * reward_sla_violation
-            + float(reward_cfg["w_ordinary_throughput"]) * reward_ordinary_throughput
-            - float(reward_cfg["w_resource_waste"]) * reward_resource_waste
-            - float(reward_cfg["w_action_change"]) * reward_action_change
+        )
+        sla_violation_contribution = (
+            -float(reward_cfg["w_sla_violation"]) * reward_sla_violation
+        )
+        ordinary_throughput_contribution = (
+            float(reward_cfg["w_ordinary_throughput"]) * reward_ordinary_throughput
+        )
+        resource_waste_penalty = (
+            float(reward_cfg["w_resource_waste"]) * reward_resource_waste
+        )
+        action_change_penalty = (
+            float(reward_cfg["w_action_change"]) * reward_action_change
+        )
+        reward_total = (
+            latency_excess_contribution
+            + sla_violation_contribution
+            + ordinary_throughput_contribution
+            - resource_waste_penalty
+            - action_change_penalty
         )
 
         # i. Update queues using Q_s(t+1)=max(0,Q_s(t)+A_s(t)-C_s(t)*delta_t).
@@ -283,12 +301,25 @@ class RANSlicingEnv(gym.Env):
             "ordinary_arrival_mbit": a_ordinary,
             "ambulance_capacity_mbps": c_ambulance,
             "ordinary_capacity_mbps": c_ordinary,
+            "ambulance_queue_before_mbit": q_ambulance_current,
+            "ordinary_queue_before_mbit": q_ordinary_current,
+            "latency_numerator_mbit": latency_numerator_mbit,
+            "latency_denominator_mbps": latency_denominator_mbps,
+            "ambulance_queue_after_mbit": self.q_ambulance,
+            "ordinary_queue_after_mbit": self.q_ordinary,
+            # Existing queue fields are after-update queue values.
             "ambulance_queue_mbit": self.q_ambulance,
             "ordinary_queue_mbit": self.q_ordinary,
             "ambulance_latency_s": l_ambulance,
+            "reconstructed_latency_s": reconstructed_latency_s,
             "ambulance_sla_violation": ambulance_sla_violation,
             "ordinary_throughput_mbps": r_ordinary,
             "prb_utilization": prb_utilization,
+            "latency_excess_raw": reward_latency_excess,
+            "sla_violation_indicator": reward_sla_violation,
+            "ordinary_throughput_reward": ordinary_throughput_contribution,
+            "resource_waste_penalty": resource_waste_penalty,
+            "action_change_penalty": action_change_penalty,
             "reward_latency_excess": reward_latency_excess,
             "reward_sla_violation": reward_sla_violation,
             "reward_ordinary_throughput": reward_ordinary_throughput,
