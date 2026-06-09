@@ -26,6 +26,7 @@ class RANSlicingEnv(gym.Env):
         queue_cfg = self.config["queue"]
         qos_cfg = self.config["qos"]
         action_cfg = self.config["action"]
+        reward_cfg = self.config["reward"]
 
         self.default_seed = int(sim_cfg["seed"])
         self.total_prb = int(sim_cfg["total_prb"])
@@ -48,6 +49,7 @@ class RANSlicingEnv(gym.Env):
         self.latency_threshold = float(qos_cfg["ambulance_latency_threshold_s"])
         self.ordinary_throughput_target = float(qos_cfg["ordinary_throughput_target_mbps"])
         self.epsilon = float(qos_cfg["epsilon"])
+        self.latency_excess_clip = float(reward_cfg.get("latency_excess_clip", 10.0))
 
         self.alpha_values = np.asarray(action_cfg["alpha_values"], dtype=np.float32)
         if self.alpha_values.shape != (8,):
@@ -233,40 +235,43 @@ class RANSlicingEnv(gym.Env):
         prb_utilization = (used_prb_ambulance + used_prb_ordinary) / self.total_prb
 
         rho_ambulance = a_ambulance / (self.a_ambulance_max + self.epsilon)
-        reward_latency_excess = max(0.0, l_ambulance / self.latency_threshold - 1.0)
-        reward_sla_violation = ambulance_sla_violation
-        reward_ordinary_throughput = min(
+        latency_excess_raw = max(0.0, l_ambulance / self.latency_threshold - 1.0)
+        latency_excess_clipped = min(latency_excess_raw, self.latency_excess_clip)
+        sla_violation_indicator = ambulance_sla_violation
+        ordinary_throughput_term = min(
             1.0,
             r_ordinary / self.ordinary_throughput_target,
         )
-        reward_resource_waste = (
+        resource_waste_term = (
             alpha_a
             if rho_ambulance < float(reward_cfg["rho_ambulance_low"])
             and alpha_a > float(reward_cfg["alpha_ambulance_high"])
             else 0.0
         )
-        reward_action_change = abs(alpha_a - self.alpha_ambulance_prev)
-        latency_excess_contribution = (
-            -float(reward_cfg["w_latency_excess"]) * reward_latency_excess
+        action_change_term = abs(alpha_a - self.alpha_ambulance_prev)
+        reward_latency_excess = (
+            -float(reward_cfg["w_latency_excess"]) * latency_excess_clipped
         )
-        sla_violation_contribution = (
-            -float(reward_cfg["w_sla_violation"]) * reward_sla_violation
+        reward_sla_violation = (
+            -float(reward_cfg["w_sla_violation"]) * sla_violation_indicator
         )
-        ordinary_throughput_contribution = (
-            float(reward_cfg["w_ordinary_throughput"]) * reward_ordinary_throughput
+        reward_ordinary_throughput = (
+            float(reward_cfg["w_ordinary_throughput"]) * ordinary_throughput_term
         )
-        resource_waste_penalty = (
-            float(reward_cfg["w_resource_waste"]) * reward_resource_waste
+        reward_resource_waste = (
+            -float(reward_cfg["w_resource_waste"]) * resource_waste_term
         )
-        action_change_penalty = (
-            float(reward_cfg["w_action_change"]) * reward_action_change
+        reward_action_change = (
+            -float(reward_cfg["w_action_change"]) * action_change_term
         )
+        resource_waste_penalty = float(reward_cfg["w_resource_waste"]) * resource_waste_term
+        action_change_penalty = float(reward_cfg["w_action_change"]) * action_change_term
         reward_total = (
-            latency_excess_contribution
-            + sla_violation_contribution
-            + ordinary_throughput_contribution
-            - resource_waste_penalty
-            - action_change_penalty
+            reward_latency_excess
+            + reward_sla_violation
+            + reward_ordinary_throughput
+            + reward_resource_waste
+            + reward_action_change
         )
 
         # i. Update queues using Q_s(t+1)=max(0,Q_s(t)+A_s(t)-C_s(t)*delta_t).
@@ -315,9 +320,10 @@ class RANSlicingEnv(gym.Env):
             "ambulance_sla_violation": ambulance_sla_violation,
             "ordinary_throughput_mbps": r_ordinary,
             "prb_utilization": prb_utilization,
-            "latency_excess_raw": reward_latency_excess,
-            "sla_violation_indicator": reward_sla_violation,
-            "ordinary_throughput_reward": ordinary_throughput_contribution,
+            "latency_excess_raw": latency_excess_raw,
+            "latency_excess_clipped": latency_excess_clipped,
+            "sla_violation_indicator": sla_violation_indicator,
+            "ordinary_throughput_reward": reward_ordinary_throughput,
             "resource_waste_penalty": resource_waste_penalty,
             "action_change_penalty": action_change_penalty,
             "reward_latency_excess": reward_latency_excess,

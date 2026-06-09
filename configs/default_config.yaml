@@ -65,6 +65,7 @@ reward:
   w_ordinary_throughput: 1.0
   w_resource_waste: 0.5
   w_action_change: 0.2
+  latency_excess_clip: 10.0
   rho_ambulance_low: 0.2
   alpha_ambulance_high: 0.5
 

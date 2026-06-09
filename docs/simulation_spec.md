@@ -192,17 +192,21 @@ The RAN scheduler handles intra-slice allocation.
 
 Reward:
 
-r_t = -w1 * E_L(t)
+r_t = -w1 * E_L_clip(t)
       -w2 * V_A(t)
       +w3 * T_O(t)
       -w4 * W_A(t)
       -w5 * abs(alpha_A(t) - alpha_A(t-1))
 
 Where:
-- E_L(t) = max(0, L_A(t) / L_A_max - 1)
+- E_L_raw(t) = max(0, L_A(t) / L_A_max - 1)
+- E_L_clip(t) = min(E_L_raw(t), E_L_max)
 - V_A(t) = 1 if L_A(t) > L_A_max, else 0
 - T_O(t) = min(1, R_O(t) / R_O_target)
 - W_A(t) = alpha_A(t) if rho_A(t) < 0.2 and alpha_A(t) > 0.5, else 0
+- E_L_max = 10
+
+Clipping is applied only to stabilize the reward scale during DQN training. It does not change the actual latency L_A(t), the SLA violation condition, or any evaluation KPI.
 
 Reward weights:
 - w1 = 3.0
