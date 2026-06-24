@@ -59,6 +59,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional prefix for output CSV filenames.",
     )
+    parser.add_argument(
+        "--episodes",
+        type=int,
+        default=None,
+        help="Number of evaluation episodes. Defaults to 30.",
+    )
     return parser.parse_args()
 
 
@@ -79,12 +85,13 @@ def evaluate_policy(
     policy: Any,
     env: RANSlicingEnv,
     seed_offset: int,
+    n_episodes: int = N_EPISODES,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Run one policy for N_EPISODES using causal action selection."""
+    """Run one policy for the requested episodes using causal action selection."""
     step_logs = []
     episode_summaries = []
 
-    for episode in range(N_EPISODES):
+    for episode in range(n_episodes):
         seed = BASE_SEED + seed_offset + episode
         obs, _ = env.reset(seed=seed)
         if hasattr(policy, "reset"):
@@ -252,6 +259,9 @@ def output_paths(run_name: str | None) -> tuple[Path, Path]:
 
 def main() -> None:
     args = parse_args()
+    n_episodes = args.episodes if args.episodes is not None else N_EPISODES
+    if n_episodes <= 0:
+        raise ValueError("--episodes must be a positive integer.")
     steps_path, summary_path = output_paths(args.run_name)
 
     env = RANSlicingEnv(CONFIG_PATH)
@@ -263,7 +273,8 @@ def main() -> None:
             policy_name=policy_name,
             policy=policy,
             env=env,
-            seed_offset=policy_index * N_EPISODES,
+            seed_offset=policy_index * n_episodes,
+            n_episodes=n_episodes,
         )
         all_step_logs.extend(step_logs)
         all_episode_summaries.extend(episode_summaries)

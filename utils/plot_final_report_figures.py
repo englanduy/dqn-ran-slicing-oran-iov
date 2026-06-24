@@ -14,8 +14,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 RESULTS_DIR = PROJECT_ROOT / "results"
-LOG_DIR = PROJECT_ROOT / "logs" / "dqn_300k_emergency_obs"
-FIGURES_DIR = RESULTS_DIR / "final_figures_report"
+CLIPPED_DQN_RUN_NAME = "dqn_300k_emergency_obs_clipped_reward"
+LOG_DIR = PROJECT_ROOT / "logs" / CLIPPED_DQN_RUN_NAME
+FIGURES_DIR = RESULTS_DIR / "final_figures_report_clipped_reward"
 POLICY_ORDER = ["Static", "Guaranteed Load-based", "DQN"]
 POLICY_NAME_MAP = {
     "StaticPolicy": "Static",
@@ -64,7 +65,7 @@ def clean_axes(ax: plt.Axes) -> None:
     ax.grid(axis="y", linestyle="--", linewidth=0.6, alpha=0.5)
 
 
-def save_figure(fig: plt.Figure, filename: str) -> None:
+def save_figure(fig: plt.Figure, filename: str) -> Path:
     """Save a figure at 300 dpi."""
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
     output_path = FIGURES_DIR / filename
@@ -72,6 +73,7 @@ def save_figure(fig: plt.Figure, filename: str) -> None:
     fig.savefig(output_path, dpi=300)
     plt.close(fig)
     print(f"Saved {output_path}")
+    return output_path
 
 
 def load_final_aggregate() -> pd.DataFrame:
@@ -119,12 +121,17 @@ def plot_kpi_bar(
     percent: bool = False,
     reference_line: float | None = None,
     reference_label: str | None = None,
-) -> None:
+) -> Path:
     """Plot a KPI comparison bar chart with error bars."""
     require_column(df, mean_column)
     plot_df = df.dropna(subset=[mean_column]).copy()
     scale = 100.0 if percent else 1.0
-    policies = plot_df["policy"].to_numpy()
+    policies = (
+        plot_df["policy"]
+        .astype(str)
+        .replace({"Guaranteed Load-based": "Guaranteed\nLoad-based"})
+        .to_numpy()
+    )
     means = (plot_df[mean_column] * scale).to_numpy(dtype=float)
     yerr = None
     if std_column in plot_df.columns:
@@ -138,53 +145,62 @@ def plot_kpi_bar(
         ax.legend()
     ax.set_xlabel("Policy")
     ax.set_ylabel(ylabel)
-    ax.set_title(title)
     clean_axes(ax)
-    save_figure(fig, filename)
+    return save_figure(fig, filename)
 
 
-def plot_kpi_figures() -> None:
+def plot_kpi_figures() -> list[Path]:
     """Generate the final KPI comparison figures."""
     aggregate_df = load_final_aggregate()
-    plot_kpi_bar(
-        aggregate_df,
-        "fig_avg_ambulance_latency.png",
-        "avg_ambulance_latency_ms_mean",
-        "avg_ambulance_latency_ms_std",
-        "Average ambulance latency (ms)",
-        "Average ambulance latency",
-        reference_line=100.0,
-        reference_label="SLA threshold",
+    output_paths = []
+    output_paths.append(
+        plot_kpi_bar(
+            aggregate_df,
+            "fig_avg_ambulance_latency.png",
+            "avg_ambulance_latency_ms_mean",
+            "avg_ambulance_latency_ms_std",
+            "Average ambulance latency (ms)",
+            "Average ambulance latency",
+            reference_line=100.0,
+            reference_label="SLA threshold",
+        )
     )
-    plot_kpi_bar(
-        aggregate_df,
-        "fig_p95_ambulance_latency.png",
-        "p95_ambulance_latency_ms_mean",
-        "p95_ambulance_latency_ms_std",
-        "95th percentile latency (ms)",
-        "95th percentile ambulance latency",
-        reference_line=100.0,
-        reference_label="SLA threshold",
+    output_paths.append(
+        plot_kpi_bar(
+            aggregate_df,
+            "fig_p95_ambulance_latency.png",
+            "p95_ambulance_latency_ms_mean",
+            "p95_ambulance_latency_ms_std",
+            "95th percentile latency (ms)",
+            "95th percentile ambulance latency",
+            reference_line=100.0,
+            reference_label="SLA threshold",
+        )
     )
-    plot_kpi_bar(
-        aggregate_df,
-        "fig_sla_violation_rate.png",
-        "sla_violation_rate_mean",
-        "sla_violation_rate_std",
-        "SLA violation rate (%)",
-        "Ambulance SLA violation rate",
-        percent=True,
+    output_paths.append(
+        plot_kpi_bar(
+            aggregate_df,
+            "fig_sla_violation_rate.png",
+            "sla_violation_rate_mean",
+            "sla_violation_rate_std",
+            "SLA violation rate (%)",
+            "Ambulance SLA violation rate",
+            percent=True,
+        )
     )
-    plot_kpi_bar(
-        aggregate_df,
-        "fig_avg_ordinary_throughput.png",
-        "avg_ordinary_throughput_mbps_mean",
-        "avg_ordinary_throughput_mbps_std",
-        "Average ordinary throughput (Mbps)",
-        "Average ordinary throughput",
-        reference_line=8.0,
-        reference_label="Throughput target",
+    output_paths.append(
+        plot_kpi_bar(
+            aggregate_df,
+            "fig_avg_ordinary_throughput.png",
+            "avg_ordinary_throughput_mbps_mean",
+            "avg_ordinary_throughput_mbps_std",
+            "Average ordinary throughput (Mbps)",
+            "Average ordinary throughput",
+            reference_line=8.0,
+            reference_label="Throughput target",
+        )
     )
+    return output_paths
 
 
 def parse_bool_series(series: pd.Series) -> pd.Series:
@@ -199,9 +215,9 @@ def action_counts(df: pd.DataFrame) -> pd.Series:
     return df["action"].value_counts().reindex(ACTION_INDICES, fill_value=0)
 
 
-def plot_dqn_action_by_emergency() -> None:
+def plot_dqn_action_by_emergency() -> Path:
     """Plot DQN action distribution under non-emergency and emergency states."""
-    steps_path = latest_file("dqn_300k_emergency_obs_steps_*.csv")
+    steps_path = latest_file(f"{CLIPPED_DQN_RUN_NAME}_steps_*.csv")
     steps_df = pd.read_csv(steps_path)
     require_column(steps_df, "action")
     require_column(steps_df, "ambulance_emergency")
@@ -220,14 +236,13 @@ def plot_dqn_action_by_emergency() -> None:
     ax.set_xticklabels(labels)
     ax.set_xlabel("Action index\nAmbulance PRB ratio")
     ax.set_ylabel("Action count")
-    ax.set_title("DQN action distribution by emergency state")
     ax.legend()
     clean_axes(ax)
-    print(f"Loaded DQN emergency-observation steps: {steps_path}")
-    save_figure(fig, "fig_dqn_action_by_emergency.png")
+    print(f"Loaded clipped-reward DQN step CSV: {steps_path}")
+    return save_figure(fig, "fig_dqn_action_by_emergency.png")
 
 
-def load_tensorboard_rewards() -> pd.DataFrame:
+def load_tensorboard_rewards() -> tuple[pd.DataFrame, list[Path]]:
     """Read rollout/ep_rew_mean from TensorBoard logs."""
     event_files = sorted(LOG_DIR.rglob("events.out.tfevents.*"), key=lambda path: path.stat().st_mtime)
     if not event_files:
@@ -257,32 +272,43 @@ def load_tensorboard_rewards() -> pd.DataFrame:
         .mean()
     )
     print(f"Loaded TensorBoard rewards from {LOG_DIR} ({len(rewards_df)} points)")
-    return rewards_df
+    print("TensorBoard event files used:")
+    for event_file in event_files:
+        print(f"- {event_file}")
+    return rewards_df, event_files
 
 
-def plot_learning_curve() -> None:
+def plot_learning_curve() -> Path:
     """Plot smoothed DQN episode reward only."""
-    rewards_df = load_tensorboard_rewards()
-    display_reward = rewards_df["reward_smooth"].where(rewards_df["reward_smooth"] >= -150, np.nan)
+    rewards_df, _ = load_tensorboard_rewards()
+    display_reward = rewards_df["reward_smooth"]
+    y_min = float(display_reward.quantile(0.02))
+    y_max = float(display_reward.quantile(0.98))
+    margin = max(5.0, 0.1 * (y_max - y_min))
 
     fig, ax = plt.subplots(figsize=(8.0, 5.0))
     ax.plot(rewards_df["step"], display_reward, linewidth=2.2, label="Smoothed episode reward")
     ax.set_xlim(0, 300000)
-    ax.set_ylim(-150, 100)
+    ax.set_ylim(y_min - margin, y_max + margin)
     ax.axvline(300000, linestyle="--", linewidth=1.2, label="300000 timesteps")
     ax.set_xlabel("Training timesteps")
     ax.set_ylabel("Episode reward")
-    ax.set_title("Learning curve of DQN-based RAN slicing")
     ax.legend()
     clean_axes(ax)
-    save_figure(fig, "fig_learning_curve_dqn.png")
+    return save_figure(fig, "fig_learning_curve_dqn.png")
 
 
 def main() -> None:
     configure_matplotlib()
-    plot_kpi_figures()
-    plot_dqn_action_by_emergency()
-    plot_learning_curve()
+    print(f"Using clipped-reward DQN run: {CLIPPED_DQN_RUN_NAME}")
+    print(f"Using TensorBoard log directory: {LOG_DIR}")
+    output_paths = []
+    output_paths.extend(plot_kpi_figures())
+    output_paths.append(plot_dqn_action_by_emergency())
+    output_paths.append(plot_learning_curve())
+    print("\nGenerated figure paths:")
+    for path in output_paths:
+        print(path)
 
 
 if __name__ == "__main__":

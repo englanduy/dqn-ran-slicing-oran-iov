@@ -40,8 +40,7 @@ The simulation does not include:
 - Episode length: 200 steps
 - Maximum number of ambulance vehicles: 3
 - Number of ordinary vehicles: 20 to 70
-- Number of eMBB users: 5 to 25
-- Maximum number of ordinary/eMBB users for normalization: 100
+- Maximum number of ordinary users for normalization: 100
 
 ## 4. Traffic Model
 
@@ -63,20 +62,19 @@ Ambulance packet arrival rates:
 - lambda_A_emergency = 50 packets/s/ambulance
 
 Ordinary Traffic Slice:
-- A_O(t) = A_V(t) + A_E(t)
+- contains ordinary vehicles only
+- N_O_pkt(t) ~ Poisson(lambda_O * n_O(t) * delta_t)
+- A_O(t) = P_O * N_O_pkt(t)
 
 Ordinary vehicle packet size:
-- P_V = 0.02 Mbit
+- P_O = 0.02 Mbit/packet
 
 Ordinary vehicle arrival rate:
-- lambda_V = 2 packets/s/user
+- lambda_O = 10.5 packets/UE/s
 
-eMBB packet size:
-- P_E = 0.1 Mbit
-
-eMBB arrival rates:
-- lambda_E_normal = 5 packets/s/user
-- lambda_E_surge = 8 packets/s/user
+With n_O measured in UEs and delta_t measured in seconds, A_O is the Mbit
+arriving during one decision slot. The implementation reuses the configuration
+keys `lambda_vehicle` and `vehicle_packet_size_mbit` for lambda_O and P_O.
 
 ## 5. Channel and Capacity Model
 
@@ -171,6 +169,11 @@ The ambulance emergency flag is assumed observable by the Near-RT RIC/xApp as co
 
 All state values fed into the DQN must be clipped to [0, 1].
 
+Emergency transitions, UE counts, Ambulance traffic, Ordinary traffic, and
+channel sampling use independent deterministic random streams derived from the
+episode seed. Changing lambda_O therefore preserves the emergency, UE,
+Ambulance-arrival, and channel trajectory for the same seed.
+
 ## 8. Action Space
 
 The DQN action space has 8 discrete actions.
@@ -197,12 +200,23 @@ r_t = -w1 * E_L_clip(t)
       +w3 * T_O(t)
       -w4 * W_A(t)
       -w5 * abs(alpha_A(t) - alpha_A(t-1))
+      -w6 * Q_O_term(t)
+      -w7 * O_O_term(t)
 
 Where:
 - E_L_raw(t) = max(0, L_A(t) / L_A_max - 1)
 - E_L_clip(t) = min(E_L_raw(t), E_L_max)
 - V_A(t) = 1 if L_A(t) > L_A_max, else 0
-- T_O(t) = min(1, R_O(t) / R_O_target)
+- D_O(t) = (Q_O(t) + A_O(t)) / delta_t
+- G_O(t) = 1 when D_O(t) = 0
+- G_O(t) = min(1, R_O(t) / (min(D_O(t), R_O_target) + epsilon)) otherwise
+- T_O(t) = G_O(t)
+- Q_O_raw(t+1) = max(0, Q_O(t) + A_O(t) - C_O(t) * delta_t)
+- O_O(t) = max(0, Q_O_raw(t+1) - Q_O_max)
+- Q_O(t+1) = min(Q_O_max, Q_O_raw(t+1))
+- Q_O_term(t) = Q_O(t+1) / Q_O_max
+- O_O_term(t) = min(1, O_O(t) / (A_O(t) + epsilon)) when A_O(t) > 0
+- O_O_term(t) = 1 if A_O(t) = 0 and O_O(t) > 0, otherwise 0
 - W_A(t) = alpha_A(t) if rho_A(t) < 0.2 and alpha_A(t) > 0.5, else 0
 - E_L_max = 10
 
@@ -214,6 +228,8 @@ Reward weights:
 - w3 = 1.0
 - w4 = 0.5
 - w5 = 0.2
+- w6 = 1.0 (Ordinary queue penalty, R1)
+- w7 = 10.0 (Ordinary overflow penalty, R1)
 
 ## 10. Baselines
 
@@ -270,3 +286,11 @@ Initial DQN settings:
 - exploration final epsilon: 0.05
 - exploration fraction: 0.3
 - initial total timesteps: 100000
+
+## 13. Result compatibility
+
+Models, tables, figures, and notebook outputs created before the traffic-model
+change include an additional eMBB traffic component. They are historical
+artifacts only and must not be reused as final results or as pretrained models
+for the ordinary-vehicle-only environment. Retraining and reevaluation are
+required for final reporting.

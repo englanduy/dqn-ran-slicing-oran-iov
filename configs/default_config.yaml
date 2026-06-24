@@ -8,8 +8,6 @@ users:
   max_ambulance: 3
   ordinary_vehicles_min: 20
   ordinary_vehicles_max: 70
-  embb_users_min: 5
-  embb_users_max: 25
   max_ordinary_users_norm: 100
 
 traffic:
@@ -21,14 +19,7 @@ traffic:
   lambda_ambulance_emergency: 50
 
   vehicle_packet_size_mbit: 0.02
-  lambda_vehicle: 2
-
-  embb_packet_size_mbit: 0.1
-  lambda_embb_normal: 5
-  lambda_embb_surge: 8
-  embb_surge_probability: 0.05
-  embb_surge_min_duration: 20
-  embb_surge_max_duration: 50
+  lambda_vehicle: 10.5
 
 channel:
   r_prb_mbps: 0.1
@@ -65,6 +56,8 @@ reward:
   w_ordinary_throughput: 1.0
   w_resource_waste: 0.5
   w_action_change: 0.2
+  w_ordinary_queue: 1.0
+  w_ordinary_overflow: 10.0
   latency_excess_clip: 10.0
   rho_ambulance_low: 0.2
   alpha_ambulance_high: 0.5

@@ -39,9 +39,7 @@ STEP_INFO_KEYS = [
     "reward_total",
     "n_ambulance",
     "n_ordinary_vehicles",
-    "n_embb_users",
     "ambulance_emergency",
-    "embb_surge_active",
 ]
 
 OBSERVATION_KEYS = [
@@ -57,6 +55,7 @@ OBSERVATION_KEYS = [
     "obs_eta_A_avg",
     "obs_eta_O_avg",
     "obs_alpha_A_prev",
+    "obs_e_A",
 ]
 
 OPTIONAL_STEP_INFO_KEYS = [

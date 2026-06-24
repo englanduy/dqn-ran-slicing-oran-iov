@@ -36,8 +36,6 @@ class RANSlicingEnv(gym.Env):
         self.max_ambulance = int(user_cfg["max_ambulance"])
         self.ordinary_vehicles_min = int(user_cfg["ordinary_vehicles_min"])
         self.ordinary_vehicles_max = int(user_cfg["ordinary_vehicles_max"])
-        self.embb_users_min = int(user_cfg["embb_users_min"])
-        self.embb_users_max = int(user_cfg["embb_users_max"])
         self.max_ordinary_users_norm = float(user_cfg["max_ordinary_users_norm"])
 
         self.r_prb = float(channel_cfg["r_prb_mbps"])
@@ -67,24 +65,21 @@ class RANSlicingEnv(gym.Env):
         self.a_ambulance_max = (
             self.max_ambulance
             * float(traffic_cfg["lambda_ambulance_emergency"])
+            * self.delta_t
             * float(traffic_cfg["ambulance_packet_size_mbit"])
         )
         self.a_ordinary_max = (
             self.ordinary_vehicles_max
             * float(traffic_cfg["lambda_vehicle"])
+            * self.delta_t
             * float(traffic_cfg["vehicle_packet_size_mbit"])
-            + self.embb_users_max
-            * float(traffic_cfg["lambda_embb_surge"])
-            * float(traffic_cfg["embb_packet_size_mbit"])
         )
 
         self._has_reset = False
         self.current_step = 0
         self.n_ambulance = 0
         self.n_ordinary_vehicles = 0
-        self.n_embb_users = 0
         self.ambulance_emergency = False
-        self.embb_surge_remaining = 0
         self.q_ambulance = 0.0
         self.q_ordinary = 0.0
         self.last_a_ambulance = 0.0
@@ -96,6 +91,14 @@ class RANSlicingEnv(gym.Env):
         self.last_eta_ordinary_avg = 0.0
         self.alpha_ambulance_prev = float(self.alpha_values[2])
 
+        # Initialized deterministically by reset(). Separate streams prevent a
+        # change in one stochastic process from perturbing the others.
+        self.rng_emergency = np.random.default_rng(self.default_seed)
+        self.rng_ue = np.random.default_rng(self.default_seed)
+        self.rng_ambulance_traffic = np.random.default_rng(self.default_seed)
+        self.rng_ordinary_traffic = np.random.default_rng(self.default_seed)
+        self.rng_channel = np.random.default_rng(self.default_seed)
+
     def reset(
         self,
         *,
@@ -105,6 +108,7 @@ class RANSlicingEnv(gym.Env):
         if seed is None and not self._has_reset:
             seed = self.default_seed
         super().reset(seed=seed)
+        self._reset_rng_streams(seed)
         self._has_reset = True
 
         # Initialize the episode population within the configured simulation ranges.
@@ -112,18 +116,13 @@ class RANSlicingEnv(gym.Env):
         # Normal state starts with no more than one ambulance UE present.
         self.n_ambulance = self._sample_normal_ambulance_count()
         self.n_ordinary_vehicles = int(
-            self.np_random.integers(
+            self.rng_ue.integers(
                 self.ordinary_vehicles_min,
                 self.ordinary_vehicles_max + 1,
             )
         )
-        self.n_embb_users = int(
-            self.np_random.integers(self.embb_users_min, self.embb_users_max + 1)
-        )
-
         # Reset traffic processes, queues, and previous-step state features.
         self.ambulance_emergency = False
-        self.embb_surge_remaining = 0
         self.q_ambulance = 0.0
         self.q_ordinary = 0.0
         self.last_a_ambulance = 0.0
@@ -161,34 +160,24 @@ class RANSlicingEnv(gym.Env):
             if self.ambulance_emergency
             else float(traffic_cfg["lambda_ambulance_normal"])
         )
-        ambulance_packets = self.np_random.poisson(
+        ambulance_packets = self.rng_ambulance_traffic.poisson(
             lambda_ambulance * self.n_ambulance * self.delta_t
         )
         a_ambulance = ambulance_packets * float(traffic_cfg["ambulance_packet_size_mbit"])
 
-        # c. Generate ordinary vehicle and eMBB arrivals.
-        self._update_embb_surge()
-        vehicle_packets = self.np_random.poisson(
+        # c. Generate Ordinary Slice arrivals from ordinary vehicles only.
+        ordinary_packets = self.rng_ordinary_traffic.poisson(
             float(traffic_cfg["lambda_vehicle"])
             * self.n_ordinary_vehicles
             * self.delta_t
         )
-        lambda_embb = (
-            float(traffic_cfg["lambda_embb_surge"])
-            if self.embb_surge_remaining > 0
-            else float(traffic_cfg["lambda_embb_normal"])
+        a_ordinary = ordinary_packets * float(
+            traffic_cfg["vehicle_packet_size_mbit"]
         )
-        embb_packets = self.np_random.poisson(
-            lambda_embb * self.n_embb_users * self.delta_t
-        )
-        a_vehicle = vehicle_packets * float(traffic_cfg["vehicle_packet_size_mbit"])
-        a_embb = embb_packets * float(traffic_cfg["embb_packet_size_mbit"])
-        a_ordinary = a_vehicle + a_embb
 
         # d. Generate UE-level spectral efficiencies for each slice.
         eta_ambulance = self._sample_spectral_efficiency(self.n_ambulance)
-        n_ordinary_users = self.n_ordinary_vehicles + self.n_embb_users
-        eta_ordinary = self._sample_spectral_efficiency(n_ordinary_users)
+        eta_ordinary = self._sample_spectral_efficiency(self.n_ordinary_vehicles)
         eta_ambulance_avg = float(np.mean(eta_ambulance)) if eta_ambulance.size else 0.0
         eta_ordinary_avg = float(np.mean(eta_ordinary)) if eta_ordinary.size else 0.0
 
@@ -221,7 +210,24 @@ class RANSlicingEnv(gym.Env):
 
         # h. Compute SLA violation, Ordinary throughput, PRB utilization, and reward.
         ambulance_sla_violation = int(l_ambulance > self.latency_threshold)
-        r_ordinary = min(offered_ordinary, c_ordinary)
+        ambulance_offered_load_mbps = a_ambulance / self.delta_t
+        ordinary_offered_load_mbps = a_ordinary / self.delta_t
+        ambulance_demand_mbps = offered_ambulance / self.delta_t
+        ordinary_demand_mbps = offered_ordinary / self.delta_t
+        r_ambulance = min(ambulance_demand_mbps, c_ambulance)
+        r_ordinary = min(ordinary_demand_mbps, c_ordinary)
+
+        # Compute the Ordinary next queue before reward so queue and overflow
+        # penalties use the exact same transition that is committed below.
+        raw_q_ordinary = max(
+            0.0,
+            offered_ordinary - c_ordinary * self.delta_t,
+        )
+        ordinary_overflow_mbit = max(
+            0.0,
+            raw_q_ordinary - self.q_ordinary_max,
+        )
+        next_q_ordinary = min(self.q_ordinary_max, raw_q_ordinary)
         used_prb_ambulance = self._used_prb(
             offered_ambulance,
             prb_ambulance,
@@ -238,9 +244,30 @@ class RANSlicingEnv(gym.Env):
         latency_excess_raw = max(0.0, l_ambulance / self.latency_threshold - 1.0)
         latency_excess_clipped = min(latency_excess_raw, self.latency_excess_clip)
         sla_violation_indicator = ambulance_sla_violation
-        ordinary_throughput_term = min(
-            1.0,
-            r_ordinary / self.ordinary_throughput_target,
+        if ordinary_demand_mbps == 0.0:
+            ordinary_demand_satisfaction = 1.0
+        else:
+            ordinary_reward_denominator = (
+                min(ordinary_demand_mbps, self.ordinary_throughput_target)
+                + self.epsilon
+            )
+            ordinary_demand_satisfaction = min(
+                1.0,
+                r_ordinary / ordinary_reward_denominator,
+            )
+        ordinary_throughput_term = ordinary_demand_satisfaction
+        ordinary_capacity_limited = int(
+            ordinary_demand_mbps > c_ordinary + self.epsilon
+        )
+        ambulance_capacity_limited = int(
+            ambulance_demand_mbps > c_ambulance + self.epsilon
+        )
+        ordinary_target_eligible = int(
+            ordinary_demand_mbps >= self.ordinary_throughput_target
+        )
+        ordinary_target_violation = int(
+            ordinary_target_eligible
+            and r_ordinary + self.epsilon < self.ordinary_throughput_target
         )
         resource_waste_term = (
             alpha_a
@@ -249,6 +276,14 @@ class RANSlicingEnv(gym.Env):
             else 0.0
         )
         action_change_term = abs(alpha_a - self.alpha_ambulance_prev)
+        ordinary_queue_term = next_q_ordinary / self.q_ordinary_max
+        if a_ordinary > 0.0:
+            ordinary_overflow_term = min(
+                1.0,
+                ordinary_overflow_mbit / (a_ordinary + self.epsilon),
+            )
+        else:
+            ordinary_overflow_term = 1.0 if ordinary_overflow_mbit > 0.0 else 0.0
         reward_latency_excess = (
             -float(reward_cfg["w_latency_excess"]) * latency_excess_clipped
         )
@@ -264,6 +299,12 @@ class RANSlicingEnv(gym.Env):
         reward_action_change = (
             -float(reward_cfg["w_action_change"]) * action_change_term
         )
+        reward_ordinary_queue = (
+            -float(reward_cfg["w_ordinary_queue"]) * ordinary_queue_term
+        )
+        reward_ordinary_overflow = (
+            -float(reward_cfg["w_ordinary_overflow"]) * ordinary_overflow_term
+        )
         resource_waste_penalty = float(reward_cfg["w_resource_waste"]) * resource_waste_term
         action_change_penalty = float(reward_cfg["w_action_change"]) * action_change_term
         reward_total = (
@@ -272,17 +313,20 @@ class RANSlicingEnv(gym.Env):
             + reward_ordinary_throughput
             + reward_resource_waste
             + reward_action_change
+            + reward_ordinary_queue
+            + reward_ordinary_overflow
         )
 
         # i. Update queues using Q_s(t+1)=max(0,Q_s(t)+A_s(t)-C_s(t)*delta_t).
-        self.q_ambulance = min(
-            self.q_ambulance_max,
-            max(0.0, offered_ambulance - c_ambulance * self.delta_t),
+        raw_q_ambulance = max(
+            0.0,
+            offered_ambulance - c_ambulance * self.delta_t,
         )
-        self.q_ordinary = min(
-            self.q_ordinary_max,
-            max(0.0, offered_ordinary - c_ordinary * self.delta_t),
-        )
+        ambulance_overflow_mbit = max(0.0, raw_q_ambulance - self.q_ambulance_max)
+        ambulance_queue_cap_hit = int(ambulance_overflow_mbit > 0.0)
+        ordinary_queue_cap_hit = int(ordinary_overflow_mbit > 0.0)
+        self.q_ambulance = min(self.q_ambulance_max, raw_q_ambulance)
+        self.q_ordinary = next_q_ordinary
 
         # Store current metrics for the next normalized observation.
         self.last_a_ambulance = a_ambulance
@@ -304,14 +348,24 @@ class RANSlicingEnv(gym.Env):
             "prb_ordinary": prb_ordinary,
             "ambulance_arrival_mbit": a_ambulance,
             "ordinary_arrival_mbit": a_ordinary,
+            "ambulance_offered_load_mbps": ambulance_offered_load_mbps,
+            "ordinary_offered_load_mbps": ordinary_offered_load_mbps,
+            "ambulance_demand_mbps": ambulance_demand_mbps,
+            "ordinary_demand_mbps": ordinary_demand_mbps,
             "ambulance_capacity_mbps": c_ambulance,
             "ordinary_capacity_mbps": c_ordinary,
+            "ambulance_served_throughput_mbps": r_ambulance,
+            "ordinary_served_throughput_mbps": r_ordinary,
             "ambulance_queue_before_mbit": q_ambulance_current,
             "ordinary_queue_before_mbit": q_ordinary_current,
             "latency_numerator_mbit": latency_numerator_mbit,
             "latency_denominator_mbps": latency_denominator_mbps,
             "ambulance_queue_after_mbit": self.q_ambulance,
             "ordinary_queue_after_mbit": self.q_ordinary,
+            "ambulance_queue_cap_hit": ambulance_queue_cap_hit,
+            "ordinary_queue_cap_hit": ordinary_queue_cap_hit,
+            "ambulance_overflow_mbit": ambulance_overflow_mbit,
+            "ordinary_overflow_mbit": ordinary_overflow_mbit,
             # Existing queue fields are after-update queue values.
             "ambulance_queue_mbit": self.q_ambulance,
             "ordinary_queue_mbit": self.q_ordinary,
@@ -319,6 +373,11 @@ class RANSlicingEnv(gym.Env):
             "reconstructed_latency_s": reconstructed_latency_s,
             "ambulance_sla_violation": ambulance_sla_violation,
             "ordinary_throughput_mbps": r_ordinary,
+            "ordinary_demand_satisfaction": ordinary_demand_satisfaction,
+            "ambulance_capacity_limited": ambulance_capacity_limited,
+            "ordinary_capacity_limited": ordinary_capacity_limited,
+            "ordinary_target_eligible": ordinary_target_eligible,
+            "ordinary_target_violation": ordinary_target_violation,
             "prb_utilization": prb_utilization,
             "latency_excess_raw": latency_excess_raw,
             "latency_excess_clipped": latency_excess_clipped,
@@ -326,28 +385,29 @@ class RANSlicingEnv(gym.Env):
             "ordinary_throughput_reward": reward_ordinary_throughput,
             "resource_waste_penalty": resource_waste_penalty,
             "action_change_penalty": action_change_penalty,
+            "ordinary_queue_term": ordinary_queue_term,
+            "ordinary_overflow_term": ordinary_overflow_term,
             "reward_latency_excess": reward_latency_excess,
             "reward_sla_violation": reward_sla_violation,
             "reward_ordinary_throughput": reward_ordinary_throughput,
             "reward_resource_waste": reward_resource_waste,
             "reward_action_change": reward_action_change,
+            "reward_ordinary_queue": reward_ordinary_queue,
+            "reward_ordinary_overflow": reward_ordinary_overflow,
             "reward_total": float(reward_total),
             "n_ambulance": self.n_ambulance,
             "n_ordinary_vehicles": self.n_ordinary_vehicles,
-            "n_embb_users": self.n_embb_users,
             "ambulance_emergency": self.ambulance_emergency,
-            "embb_surge_active": self.embb_surge_remaining > 0,
         }
 
         # j. Return the next observation and Gymnasium step tuple.
         return self._get_observation(), float(reward_total), terminated, truncated, info
 
     def _get_observation(self) -> np.ndarray:
-        n_ordinary_users = self.n_ordinary_vehicles + self.n_embb_users
         observation = np.asarray(
             [
                 self.n_ambulance / self.max_ambulance,
-                n_ordinary_users / self.max_ordinary_users_norm,
+                self.n_ordinary_vehicles / self.max_ordinary_users_norm,
                 self.last_a_ambulance / (self.a_ambulance_max + self.epsilon),
                 self.last_a_ordinary / (self.a_ordinary_max + self.epsilon),
                 self.q_ambulance / self.q_ambulance_max,
@@ -367,36 +427,24 @@ class RANSlicingEnv(gym.Env):
     def _update_ambulance_state(self) -> None:
         traffic_cfg = self.config["traffic"]
         if self.ambulance_emergency:
-            if self.np_random.random() < float(traffic_cfg["p_off"]):
+            if self.rng_emergency.random() < float(traffic_cfg["p_off"]):
                 self.ambulance_emergency = False
                 self.n_ambulance = self._sample_normal_ambulance_count()
-        elif self.np_random.random() < float(traffic_cfg["p_on"]):
+        elif self.rng_emergency.random() < float(traffic_cfg["p_on"]):
             self.ambulance_emergency = True
-            self.n_ambulance = int(self.np_random.integers(1, self.max_ambulance + 1))
-
-    def _update_embb_surge(self) -> None:
-        traffic_cfg = self.config["traffic"]
-        if self.embb_surge_remaining > 0:
-            self.embb_surge_remaining -= 1
-            return
-
-        if self.np_random.random() < float(traffic_cfg["embb_surge_probability"]):
-            self.embb_surge_remaining = int(
-                self.np_random.integers(
-                    int(traffic_cfg["embb_surge_min_duration"]),
-                    int(traffic_cfg["embb_surge_max_duration"]) + 1,
-                )
+            self.n_ambulance = int(
+                self.rng_ue.integers(1, self.max_ambulance + 1)
             )
 
     def _sample_normal_ambulance_count(self) -> int:
-        return int(self.np_random.integers(0, min(1, self.max_ambulance) + 1))
+        return int(self.rng_ue.integers(0, min(1, self.max_ambulance) + 1))
 
     def _sample_spectral_efficiency(self, n_users: int) -> np.ndarray:
         if n_users <= 0:
             return np.asarray([], dtype=np.float32)
 
         channel_cfg = self.config["channel"]
-        states = self.np_random.choice(
+        states = self.rng_channel.choice(
             3,
             size=n_users,
             p=[
@@ -410,23 +458,42 @@ class RANSlicingEnv(gym.Env):
         poor = states == 0
         normal = states == 1
         good = states == 2
-        eta[poor] = self.np_random.uniform(
+        eta[poor] = self.rng_channel.uniform(
             float(channel_cfg["eta_poor_min"]),
             float(channel_cfg["eta_poor_max"]),
             size=int(np.sum(poor)),
         )
-        eta[normal] = self.np_random.uniform(
+        eta[normal] = self.rng_channel.uniform(
             float(channel_cfg["eta_normal_min"]),
             float(channel_cfg["eta_normal_max"]),
             size=int(np.sum(normal)),
         )
-        eta[good] = self.np_random.uniform(
+        eta[good] = self.rng_channel.uniform(
             float(channel_cfg["eta_good_min"]),
             float(channel_cfg["eta_good_max"]),
             size=int(np.sum(good)),
         )
 
         return eta
+
+    def _reset_rng_streams(self, seed: int | None) -> None:
+        if seed is None:
+            entropy: int | list[int] = self.np_random.integers(
+                0,
+                np.iinfo(np.uint32).max,
+                size=4,
+                dtype=np.uint32,
+            ).tolist()
+        else:
+            entropy = int(seed)
+        streams = np.random.SeedSequence(entropy).spawn(5)
+        (
+            self.rng_emergency,
+            self.rng_ue,
+            self.rng_ambulance_traffic,
+            self.rng_ordinary_traffic,
+            self.rng_channel,
+        ) = tuple(np.random.default_rng(stream) for stream in streams)
 
     def _intra_slice_prb_share(self, prb: int, n_users: int) -> float:
         if prb <= 0 or n_users <= 0:

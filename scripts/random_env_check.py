@@ -1,3 +1,4 @@
+import argparse
 import csv
 import sys
 from pathlib import Path
@@ -13,18 +14,30 @@ from envs.ran_slicing_env import RANSlicingEnv
 
 N_EPISODES = 5
 CONFIG_PATH = "configs/default_config.yaml"
-STEP_LOG_PATH = PROJECT_ROOT / "results" / "random_env_check_steps.csv"
-SUMMARY_LOG_PATH = PROJECT_ROOT / "results" / "random_env_check_summary.csv"
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run random-policy environment checks.")
+    parser.add_argument("--episodes", type=int, default=N_EPISODES)
+    parser.add_argument(
+        "--run-name",
+        default="random_env_check",
+        help="Output filename prefix under results/.",
+    )
+    return parser.parse_args()
 
 
 def main() -> None:
+    args = parse_args()
+    if args.episodes <= 0:
+        raise ValueError("--episodes must be a positive integer.")
     env = RANSlicingEnv(CONFIG_PATH)
     env.action_space.seed(42)
 
     step_logs = []
     summary_logs = []
 
-    for episode in range(N_EPISODES):
+    for episode in range(args.episodes):
         env.reset(seed=42 + episode)
 
         total_reward = 0.0
@@ -98,11 +111,13 @@ def main() -> None:
         print(f"  average PRB utilization: {summary['avg_prb_utilization']:.6f}")
         print(f"  action counts: {summary['action_counts']}")
 
-    STEP_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    write_csv(STEP_LOG_PATH, step_logs)
-    write_csv(SUMMARY_LOG_PATH, summary_logs)
-    print(f"Saved step-level logs to {STEP_LOG_PATH}")
-    print(f"Saved per-episode summary to {SUMMARY_LOG_PATH}")
+    step_log_path = PROJECT_ROOT / "results" / f"{args.run_name}_steps.csv"
+    summary_log_path = PROJECT_ROOT / "results" / f"{args.run_name}_summary.csv"
+    step_log_path.parent.mkdir(parents=True, exist_ok=True)
+    write_csv(step_log_path, step_logs)
+    write_csv(summary_log_path, summary_logs)
+    print(f"Saved step-level logs to {step_log_path}")
+    print(f"Saved per-episode summary to {summary_log_path}")
 
 
 def write_csv(path: Path, rows: list[dict]) -> None:
